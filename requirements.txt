@@ -1,0 +1,10 @@
+streamlit
+torch
+transformers
+praw
+chromadb
+anthropic
+python-dotenv
+pandas
+trafilatura
+feedparser
