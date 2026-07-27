@@ -6,7 +6,7 @@ TEAM_SUBREDDITS = {
     "Brooklyn Nets": "GoNets",
     "Charlotte Hornets": "CharlotteHornets",
     "Chicago Bulls": "chicagobulls",
-    "Cleveland Cavaliers": "clevelandcavaliers",
+    "Cleveland Cavaliers": "clevelandcavs",
     "Dallas Mavericks": "mavericks",
     "Denver Nuggets": "denvernuggets",
     "Detroit Pistons": "DetroitPistons",

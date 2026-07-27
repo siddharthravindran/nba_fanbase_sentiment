@@ -13,22 +13,34 @@ from ingest.teams import TEAM_SUBREDDITS
 BASE_URL = "https://arctic-shift.photon-reddit.com"
 PAGE_LIMIT = 100
 REQUEST_DELAY_SEC = 1.0  # be polite; no documented rate limit but avoid hammering
+MAX_RETRIES = 4
+RETRY_BACKOFF_SEC = 5.0  # doubles each retry: 5s, 10s, 20s, 40s
 
 
 def _fetch_page(subreddit: str, after: int, before: int) -> list[dict]:
-    resp = requests.get(
-        f"{BASE_URL}/api/posts/search",
-        params={
-            "subreddit": subreddit,
-            "after": after,
-            "before": before,
-            "sort": "asc",
-            "limit": PAGE_LIMIT,
-        },
-        timeout=30,
-    )
-    resp.raise_for_status()
-    return resp.json().get("data", [])
+    """Fetch one page, retrying on transient errors: Arctic Shift intermittently
+    returns 422 under load even for valid, previously-working requests, and
+    occasionally times out at the network level (ReadTimeout/ConnectionError)."""
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            resp = requests.get(
+                f"{BASE_URL}/api/posts/search",
+                params={
+                    "subreddit": subreddit,
+                    "after": after,
+                    "before": before,
+                    "sort": "asc",
+                    "limit": PAGE_LIMIT,
+                },
+                timeout=30,
+            )
+            resp.raise_for_status()
+            return resp.json().get("data", [])
+        except requests.exceptions.RequestException:
+            if attempt == MAX_RETRIES:
+                raise
+            time.sleep(RETRY_BACKOFF_SEC * (2 ** (attempt - 1)))
+    return []
 
 
 def fetch_posts_in_range(subreddit: str, after: int, before: int):
@@ -67,16 +79,26 @@ def backfill(days_back: int = 180):
     conn = get_connection()
 
     for team, subreddit in TEAM_SUBREDDITS.items():
-        docs = []
+        total = 0
+        batch = []
         try:
             for post in fetch_posts_in_range(subreddit, after, before):
-                docs.append(to_doc(post, team))
-        except requests.HTTPError as e:
-            print(f"[{team}] r/{subreddit} failed: {e}")
+                batch.append(to_doc(post, team))
+                if len(batch) >= PAGE_LIMIT:
+                    upsert_docs(conn, batch)
+                    total += len(batch)
+                    batch = []
+        except requests.exceptions.RequestException as e:
+            if batch:
+                upsert_docs(conn, batch)
+                total += len(batch)
+            print(f"[{team}] r/{subreddit} stopped early after {total} posts: {e}")
             continue
 
-        upsert_docs(conn, docs)
-        print(f"[{team}] r/{subreddit}: {len(docs)} posts ingested")
+        if batch:
+            upsert_docs(conn, batch)
+            total += len(batch)
+        print(f"[{team}] r/{subreddit}: {total} posts ingested")
 
     print(f"Total docs in DB: {count_docs(conn)}")
     conn.close()
