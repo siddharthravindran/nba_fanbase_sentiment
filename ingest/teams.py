@@ -32,3 +32,38 @@ TEAM_SUBREDDITS = {
     "Utah Jazz": "UtahJazz",
     "Washington Wizards": "washingtonwizards",
 }
+
+# Nicknames/aliases used to detect which team(s) an article is about via text
+# matching (articles aren't scoped to a single subreddit like Reddit posts are).
+TEAM_ALIASES = {
+    "Atlanta Hawks": ["Hawks"],
+    "Boston Celtics": ["Celtics"],
+    "Brooklyn Nets": ["Nets"],
+    "Charlotte Hornets": ["Hornets"],
+    "Chicago Bulls": ["Bulls"],
+    "Cleveland Cavaliers": ["Cavaliers", "Cavs"],
+    "Dallas Mavericks": ["Mavericks", "Mavs"],
+    "Denver Nuggets": ["Nuggets"],
+    "Detroit Pistons": ["Pistons"],
+    "Golden State Warriors": ["Warriors"],
+    "Houston Rockets": ["Rockets"],
+    "Indiana Pacers": ["Pacers"],
+    "LA Clippers": ["Clippers"],
+    "Los Angeles Lakers": ["Lakers"],
+    "Memphis Grizzlies": ["Grizzlies"],
+    "Miami Heat": ["Heat"],
+    "Milwaukee Bucks": ["Bucks"],
+    "Minnesota Timberwolves": ["Timberwolves", "Wolves"],
+    "New Orleans Pelicans": ["Pelicans"],
+    "New York Knicks": ["Knicks"],
+    "Oklahoma City Thunder": ["Thunder"],
+    "Orlando Magic": ["Magic"],
+    "Philadelphia 76ers": ["76ers", "Sixers"],
+    "Phoenix Suns": ["Suns"],
+    "Portland Trail Blazers": ["Trail Blazers", "Blazers"],
+    "Sacramento Kings": ["Kings"],
+    "San Antonio Spurs": ["Spurs"],
+    "Toronto Raptors": ["Raptors"],
+    "Utah Jazz": ["Jazz"],
+    "Washington Wizards": ["Wizards"],
+}
