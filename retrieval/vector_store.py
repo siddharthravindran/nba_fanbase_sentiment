@@ -9,17 +9,23 @@ def get_collection(persist_dir: str = "data/chroma"):
     return client.get_or_create_collection(COLLECTION_NAME)
 
 
-def add_docs(collection, docs: list[dict]):
-    """docs: [{id, text, team, source, sentiment_labels, created_utc}, ...]"""
-    collection.add(
+def add_docs(collection, docs: list[dict], embeddings: list[list[float]] | None = None):
+    """docs: [{id, text, team, source, top_emotion, top_score, created_utc}, ...]
+    Uses upsert (not add) so re-running is idempotent/resumable.
+
+    Pass precomputed `embeddings` (e.g. from a GPU embedding run) to skip
+    running the local (slow, CPU-bound) embedding function during bulk loads."""
+    collection.upsert(
         ids=[d["id"] for d in docs],
         documents=[d["text"] for d in docs],
+        embeddings=embeddings,
         metadatas=[
             {
-                "team": d["team"],
+                "team": d["team"] or "",
                 "source": d["source"],
-                "sentiment_labels": ",".join(d.get("sentiment_labels", [])),
-                "created_utc": d.get("created_utc", ""),
+                "top_emotion": d.get("top_emotion") or "",
+                "top_score": d.get("top_score") or 0.0,
+                "created_utc": d.get("created_utc") or "",
             }
             for d in docs
         ],
