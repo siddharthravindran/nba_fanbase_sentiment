@@ -34,20 +34,31 @@ def aggregate_team_sentiment(team: str) -> dict:
     }
 
 
-def aggregate_topic_sentiment(collection, team: str, topic: str, n_results: int = 100) -> dict:
+def aggregate_topic_sentiment(collection, team: str, topic: str, n_results: int = 100, candidate_pool: int = 300) -> dict:
+    """Semantic search alone can't tell rumor-phase buzz apart from reaction
+    to a settled outcome (e.g. "excitement about maybe landing a player" vs.
+    "how fans feel now that it didn't happen" both match the same query).
+    To reduce that contamination, pull a wide semantically-relevant candidate
+    pool, then keep only the most recent `n_results` of it - recent posts are
+    far more likely to reflect the current/settled sentiment than posts from
+    earlier in a story's rumor-to-resolution arc."""
     results = collection.query(
         query_texts=[topic],
-        n_results=n_results,
+        n_results=candidate_pool,
         where={"team": team},
     )
     metadatas = results["metadatas"][0] if results["metadatas"] else []
 
+    dated = [m for m in metadatas if m.get("created_utc")]
+    dated.sort(key=lambda m: m["created_utc"], reverse=True)
+    sampled = dated[:n_results]
+
     counts: dict[str, int] = {}
-    for meta in metadatas:
+    for meta in sampled:
         emotion = meta.get("top_emotion") or "unknown"
         counts[emotion] = counts.get(emotion, 0) + 1
 
-    total = len(metadatas)
+    total = len(sampled)
     distribution = sorted(
         ({"emotion": emotion, "count": count, "pct": round(100 * count / total, 1) if total else 0.0}
          for emotion, count in counts.items()),
@@ -57,7 +68,8 @@ def aggregate_topic_sentiment(collection, team: str, topic: str, n_results: int 
     return {
         "team": team,
         "topic": topic,
-        "mode": "sampled",
+        "mode": "sampled_recent",
         "n_docs": total,
+        "date_range": {"earliest": sampled[-1]["created_utc"], "latest": sampled[0]["created_utc"]} if sampled else None,
         "distribution": distribution,
     }

@@ -73,9 +73,20 @@ def call_tool(name: str, tool_input: dict, collection) -> dict:
         team = tool_input["team"]
         topic = tool_input["topic"]
         n_results = tool_input.get("n_results", 5)
-        results = query(collection, topic, team=team, n_results=n_results)
+
+        # Over-fetch a wider semantically-relevant pool, then keep only the
+        # most recent n_results - same rationale as aggregate_topic_sentiment:
+        # recent posts better reflect settled sentiment than early rumor buzz
+        # that happens to share the same topic/entities.
+        candidate_pool = max(50, n_results * 10)
+        results = query(collection, topic, team=team, n_results=candidate_pool)
         docs = results["documents"][0] if results["documents"] else []
         metas = results["metadatas"][0] if results["metadatas"] else []
+
+        dated = [(doc, meta) for doc, meta in zip(docs, metas) if meta.get("created_utc")]
+        dated.sort(key=lambda pair: pair[1]["created_utc"], reverse=True)
+        sampled = dated[:n_results]
+
         return {
             "quotes": [
                 {
@@ -84,7 +95,7 @@ def call_tool(name: str, tool_input: dict, collection) -> dict:
                     "top_emotion": meta.get("top_emotion"),
                     "created_utc": meta.get("created_utc"),
                 }
-                for doc, meta in zip(docs, metas)
+                for doc, meta in sampled
             ]
         }
 
