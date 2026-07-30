@@ -26,8 +26,9 @@ from google.colab import drive
 
 drive.mount("/content/drive")
 
-IN_PATH = "/content/drive/MyDrive/nba_fanbase_sentiment/embed_export.jsonl"
-OUT_DIR = "/content/drive/MyDrive/nba_fanbase_sentiment/"
+IN_PATH = "/content/drive/MyDrive/nba_fanbase_sentiment/embed_export_new.jsonl"
+OUT_DIR = "/content/drive/MyDrive/nba_fanbase_sentiment/embed_new/"
+os.makedirs(OUT_DIR, exist_ok=True)
 CHUNK_SIZE = 50_000  # docs per saved shard
 
 ids, texts = [], []
