@@ -1,4 +1,5 @@
 """Tool schemas + dispatch for the Claude tool-calling chat layer."""
+from ingest.storage import get_connection
 from ingest.teams import TEAM_SUBREDDITS
 from retrieval.aggregate import aggregate_team_sentiment, aggregate_topic_sentiment
 from retrieval.vector_store import query
@@ -61,6 +62,24 @@ TOOLS = [
 ]
 
 
+def _lookup_urls(doc_ids: list[str]) -> dict[str, str]:
+    """Chroma metadata doesn't carry the source URL (and rewriting metadata for
+    millions of embedded docs to add it would be expensive), so resolve it with
+    a primary-key lookup against clean_docs instead. Lets the UI link each
+    quote back to the actual Reddit thread or article."""
+    if not doc_ids:
+        return {}
+    conn = get_connection()
+    try:
+        placeholders = ",".join("?" * len(doc_ids))
+        rows = conn.execute(
+            f"SELECT id, url FROM clean_docs WHERE id IN ({placeholders})", doc_ids
+        ).fetchall()
+    finally:
+        conn.close()
+    return {doc_id: url for doc_id, url in rows if url}
+
+
 def call_tool(name: str, tool_input: dict, collection) -> dict:
     if name == "aggregate_sentiment":
         team = tool_input["team"]
@@ -82,10 +101,17 @@ def call_tool(name: str, tool_input: dict, collection) -> dict:
         results = query(collection, topic, team=team, n_results=candidate_pool)
         docs = results["documents"][0] if results["documents"] else []
         metas = results["metadatas"][0] if results["metadatas"] else []
+        ids = results["ids"][0] if results["ids"] else []
 
-        dated = [(doc, meta) for doc, meta in zip(docs, metas) if meta.get("created_utc")]
-        dated.sort(key=lambda pair: pair[1]["created_utc"], reverse=True)
+        dated = [
+            (doc_id, doc, meta)
+            for doc_id, doc, meta in zip(ids, docs, metas)
+            if meta.get("created_utc")
+        ]
+        dated.sort(key=lambda triple: triple[2]["created_utc"], reverse=True)
         sampled = dated[:n_results]
+
+        urls = _lookup_urls([doc_id for doc_id, _, _ in sampled])
 
         return {
             "quotes": [
@@ -94,8 +120,9 @@ def call_tool(name: str, tool_input: dict, collection) -> dict:
                     "source": meta.get("source"),
                     "top_emotion": meta.get("top_emotion"),
                     "created_utc": meta.get("created_utc"),
+                    "url": urls.get(doc_id),
                 }
-                for doc, meta in sampled
+                for doc_id, doc, meta in sampled
             ]
         }
 
