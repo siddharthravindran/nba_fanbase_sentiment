@@ -1,0 +1,19 @@
+name: Nightly data update
+
+on:
+  schedule:
+    # 09:00 UTC = 4-5am US Eastern, well after the previous night's games end
+    - cron: "0 9 * * *"
+  workflow_dispatch: {}  # allows manual trigger from the Actions tab
+
+jobs:
+  update:
+    runs-on: self-hosted
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run nightly pipeline
+        run: |
+          source ~/venvs/nba-fanbase-sentiment/bin/activate
+          python3 -m scripts.run_nightly_pipeline
