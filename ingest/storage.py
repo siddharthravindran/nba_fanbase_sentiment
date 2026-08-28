@@ -32,6 +32,12 @@ CREATE TABLE IF NOT EXISTS clean_docs (
 def get_connection() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(DB_PATH, timeout=30)
+    # WAL lets readers and a writer coexist, and keeps concurrent ingest jobs
+    # (e.g. the GDELT backfill running alongside the Reddit comment backfill)
+    # from failing outright with "database is locked". busy_timeout makes a
+    # blocked writer wait for the other's commit instead of erroring.
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=60000")
     conn.executescript(SCHEMA)
     return conn
 
