@@ -6,8 +6,13 @@ ingest/arctic_shift_comments_ingest.py, just parameterized with an explicit
 [START, END) window instead of "N days back from now".
 
 Usage: python -m scripts.backfill_range [posts|comments|both]
+       python -m scripts.backfill_range both --start 2026-07-29 --end 2026-08-29
+
+Defaults cover the original July-2025 season backfill. Pass --start/--end to
+heal a specific gap - e.g. after the pipeline sits paused for weeks, the
+nightly job's short rolling lookback can't reach back far enough on its own.
 """
-import sys
+import argparse
 from datetime import datetime, timezone
 
 import requests
@@ -29,8 +34,9 @@ START = datetime(2025, 7, 1, tzinfo=timezone.utc)
 END = datetime(2026, 1, 23, tzinfo=timezone.utc)
 
 
-def backfill_posts():
-    after, before = int(START.timestamp()), int(END.timestamp())
+def backfill_posts(start: datetime = None, end: datetime = None):
+    start, end = start or START, end or END
+    after, before = int(start.timestamp()), int(end.timestamp())
     conn = get_connection()
     for team, subreddit in TEAM_SUBREDDITS.items():
         total = 0
@@ -58,8 +64,9 @@ def backfill_posts():
     conn.close()
 
 
-def backfill_comments():
-    after, before = int(START.timestamp()), int(END.timestamp())
+def backfill_comments(start: datetime = None, end: datetime = None):
+    start, end = start or START, end or END
+    after, before = int(start.timestamp()), int(end.timestamp())
     conn = get_connection()
     for team, subreddit in TEAM_SUBREDDITS.items():
         total = 0
@@ -89,11 +96,20 @@ def backfill_comments():
     conn.close()
 
 
+def _parse_date(value: str) -> datetime:
+    return datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+
+
 if __name__ == "__main__":
-    which = sys.argv[1] if len(sys.argv) > 1 else "both"
-    if which in ("posts", "both"):
-        print(f"=== Backfilling posts: {START.date()} to {END.date()} ===")
-        backfill_posts()
-    if which in ("comments", "both"):
-        print(f"=== Backfilling comments: {START.date()} to {END.date()} ===")
-        backfill_comments()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("which", nargs="?", default="both", choices=["posts", "comments", "both"])
+    parser.add_argument("--start", type=_parse_date, default=START, help="YYYY-MM-DD (inclusive)")
+    parser.add_argument("--end", type=_parse_date, default=END, help="YYYY-MM-DD (exclusive)")
+    args = parser.parse_args()
+
+    if args.which in ("posts", "both"):
+        print(f"=== Backfilling posts: {args.start.date()} to {args.end.date()} ===")
+        backfill_posts(args.start, args.end)
+    if args.which in ("comments", "both"):
+        print(f"=== Backfilling comments: {args.start.date()} to {args.end.date()} ===")
+        backfill_comments(args.start, args.end)
