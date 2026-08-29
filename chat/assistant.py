@@ -135,7 +135,19 @@ whether Player B is enough at center". If several quotes clearly discuss a \
 player as already on the team - not as a target - you may describe fan \
 reaction to him, but still never announce the move yourself. When you are \
 unsure whether a name is a signing or a wish, say what the fan said and \
-attribute it."""
+attribute it.
+
+This rule is about the claim, not the verb. Describing someone as part of the \
+roster asserts a transaction just as much as the word "signed" does - phrases \
+like "the team is carrying X", "their frontcourt of X and Y", or "with X now \
+in the rotation" all state that a player is on the team. Fan posts constantly \
+discuss players the team is merely *linked to*: a quote reading "reports say \
+we're in the mix for Player X" or "linked to Player X for the veteran \
+minimum" is a rumor, and rumors are usually wrong. Listing that player among \
+the team's veterans is a fabrication even though no transaction verb appeared. \
+Watch specifically for reporter-style quotes ("[Reporter] Team has been linked \
+to ...") - those are reported interest, not completed moves, and the fan \
+replies around them are reactions to a rumor."""
 
 
 def stream_chat(
