@@ -26,6 +26,14 @@ CREATE TABLE IF NOT EXISTS clean_docs (
     created_utc TEXT,
     cleaned_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
+
+-- The app's data-freshness caption is a MAX(created_utc); unindexed that's a
+-- full scan of millions of rows (~7s) blocking first paint.
+CREATE INDEX IF NOT EXISTS idx_clean_docs_created ON clean_docs(created_utc);
+
+-- The nightly Chroma sync selects by ingestion time, not publication time
+-- (backfilled articles are published long before we fetch them).
+CREATE INDEX IF NOT EXISTS idx_clean_docs_cleaned_at ON clean_docs(cleaned_at);
 """
 
 
