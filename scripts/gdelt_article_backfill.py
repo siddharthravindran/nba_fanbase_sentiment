@@ -80,12 +80,21 @@ def _build_query(team_alias: str) -> str:
     return query
 
 
-def _fetch_window(query: str, after: datetime, before: datetime) -> list[dict] | None:
-    """Returns a (possibly empty) article list on success, or None if every
-    attempt failed. The distinction matters: GDELT legitimately returns zero
-    results for many windows, but a dropped network connection also yields
-    nothing - conflating them silently marks a team "complete" with no data
-    (and the resume state file would then skip it forever)."""
+def _fetch_window(
+    query: str, after: datetime, before: datetime
+) -> tuple[list[dict] | None, str]:
+    """Returns (articles, reason). articles is a (possibly empty) list on
+    success, or None if every attempt failed - `reason` then says why.
+
+    The success/failure distinction matters: GDELT legitimately returns zero
+    results for many windows, but a dropped connection or a throttle also
+    yields nothing - conflating them silently marks a team "complete" with no
+    data (and the resume state file would then skip it forever).
+
+    Note GDELT signals several errors as HTTP 200 with a plain-text body
+    instead of JSON (rate limiting, malformed queries). Those must be surfaced,
+    not swallowed, or they look identical to a network outage."""
+    reason = "unknown"
     for attempt in range(1, MAX_RETRIES + 1):
         try:
             resp = requests.get(
@@ -101,15 +110,27 @@ def _fetch_window(query: str, after: datetime, before: datetime) -> list[dict] |
                 timeout=30,
             )
             if resp.status_code == 429:
+                reason = "HTTP 429 rate limited"
                 time.sleep(RETRY_BACKOFF_SEC * attempt)
                 continue
             resp.raise_for_status()
-            return resp.json().get("articles", [])
-        except requests.exceptions.RequestException:
+            try:
+                return resp.json().get("articles", []), "ok"
+            except ValueError:
+                reason = f"non-JSON body: {resp.text.strip()[:120]!r}"
+                time.sleep(RETRY_BACKOFF_SEC * attempt)
+                continue
+        except requests.exceptions.RequestException as e:
+            # Unwrap to the innermost cause - requests nests the real error
+            # (SSL/socket) several layers deep behind "Max retries exceeded".
+            root = e
+            while getattr(root, "__cause__", None) or getattr(root, "__context__", None):
+                root = root.__cause__ or root.__context__
+            reason = f"{type(e).__name__}: {type(root).__name__}: {str(root)[:160]}"
             if attempt == MAX_RETRIES:
-                return None
+                return None, reason
             time.sleep(RETRY_BACKOFF_SEC * attempt)
-    return None
+    return None, reason
 
 
 def _parse_seendate(seendate: str) -> str | None:
@@ -151,6 +172,7 @@ def backfill(team_filter: str | None = None):
         window_num = 0
         failed_windows = 0
         empty_windows = 0
+        consecutive_failures = 0
 
         window_start = START
         while window_start < END:
@@ -162,12 +184,21 @@ def backfill(team_filter: str | None = None):
                 end=" ",
                 flush=True,
             )
-            articles = _fetch_window(query, window_start, window_end)
+            articles, reason = _fetch_window(query, window_start, window_end)
             if articles is None:
                 failed_windows += 1
-                print("REQUEST FAILED (will not mark team complete)")
+                consecutive_failures += 1
+                print(f"FAILED - {reason}")
                 articles = []
+                # Once several windows fail back to back it's a sustained
+                # problem (throttle or connection loss), not a blip. Hammering
+                # a rate limiter keeps it angry, so ease off before continuing.
+                if consecutive_failures % 5 == 0:
+                    cooldown = min(60 * consecutive_failures / 5, 300)
+                    print(f"  ...{consecutive_failures} failures in a row, cooling down {cooldown:.0f}s")
+                    time.sleep(cooldown)
             else:
+                consecutive_failures = 0
                 if not articles:
                     empty_windows += 1
                 print(f"{len(articles)} candidates")
