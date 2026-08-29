@@ -4,9 +4,6 @@ Ask how a team's fanbase feels about anything — a trade, a rookie, a coach, th
 season — and get an answer grounded in what fans actually wrote, with the quotes
 attached.
 
-> _Screenshot placeholder — replace with a shot of a Lakers answer showing the
-> emotion distribution and the linked quotes below it._
-
 The corpus is **3,560,910 documents** from all 30 team subreddits plus NBA news
 coverage, spanning **2025-07-01 to 2026-08-28**. Every document is scored by a
 RoBERTa emotion classifier fine-tuned on NBA fan writing
