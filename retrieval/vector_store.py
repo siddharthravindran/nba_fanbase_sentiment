@@ -58,8 +58,9 @@ class TeamCollections:
     the 3.5M collection vs 0.38s unfiltered on its own collection, a 29x
     speedup, with identical top-10 ordering and distances.
 
-    Falls back to the single collection when a team's collection is missing, so
-    the app still works mid-migration or on a fresh clone.
+    Falls back to the single pre-migration collection when a team's collection
+    is missing, so the app still works mid-migration or on a fresh clone that
+    has only ever run populate_chroma.
     """
 
     def __init__(self, persist_dir: str = "data/chroma"):
@@ -80,7 +81,15 @@ class TeamCollections:
                 self._cache[name] = self._client.get_collection(name)
             return self._cache[name], False
         if self._fallback is None:
-            self._fallback = self._client.get_or_create_collection(COLLECTION_NAME)
+            # get_collection, NOT get_or_create_collection. This branch runs
+            # only when a team's own collection is missing, i.e. something is
+            # already wrong. get_or_create would answer that by manufacturing an
+            # empty collection, and every query against it would return zero
+            # results while reporting success - the app would render an empty
+            # chart and the model would state that fans have said nothing about
+            # the topic. A fabricated silence is worse than an outage, because
+            # nothing about it looks broken. Raising is the correct failure.
+            self._fallback = self._client.get_collection(COLLECTION_NAME)
         return self._fallback, True
 
 
