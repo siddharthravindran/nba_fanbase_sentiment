@@ -57,6 +57,17 @@ BOT_AVATAR = "🏀"
 # target - it repaints only when new text has actually arrived.
 STREAM_FLUSH_SECONDS = 0.07
 
+# The one element in the app that actually scrolls. Worth pinning as a constant
+# because guessing it is expensive: `[data-testid="stAppViewContainer"]` is a
+# real element and accepts a `scrollTop` assignment without error, but it is not
+# a scroll container, so the write silently does nothing. Three separate
+# attempts at the scroll behavior failed that way. Verified by walking the DOM
+# for elements with `overflow-y: auto` and `scrollHeight > clientHeight`; only
+# this section and the sidebar qualify. If a Streamlit upgrade renames it, the
+# symptom will be scrolling that quietly stops working - re-run that check
+# rather than adding more candidate selectors.
+SCROLLER = '[data-testid="stAppScrollToBottomContainer"]'
+
 # Grouping the 9 model labels by valence lets the charts encode meaning in
 # color (is this a happy fanbase or a miserable one?) instead of handing out
 # arbitrary categorical colors, and gives the league leaderboard a single
@@ -643,6 +654,38 @@ else:
         with st.chat_message("user", avatar=USER_AVATAR):
             st.write(pending_prompt)
 
+        # Follow the answer as it streams. Streamlit's bottom anchor only fires
+        # on a rerun, but the whole turn - status updates, then the answer
+        # growing token by token - happens inside a single script run, writing
+        # into placeholders. So a reader who submits from the top of the page
+        # never moves, and watches nothing while the answer is written offscreen.
+        #
+        # This iframe outlives the statement that created it, so its timer keeps
+        # pinning the bottom for the rest of the turn. Any deliberate scroll
+        # gesture cancels it: re-asserting the bottom under someone who has
+        # scrolled up to re-read is worse than not following at all.
+        components.html(
+            f"""<script>
+            const el = window.parent.document.querySelector('{SCROLLER}');
+            if (el) {{
+                let follow = true;
+                const release = () => {{ follow = false; }};
+                for (const ev of ['wheel', 'touchmove', 'keydown']) {{
+                    el.addEventListener(ev, release, {{passive: true}});
+                    window.parent.addEventListener(ev, release, {{passive: true}});
+                }}
+                // Backstop only: a turn is ~20s, and a timer left running past
+                // the turn would yank the page down on the next one.
+                const deadline = Date.now() + 120000;
+                const tick = setInterval(() => {{
+                    if (follow) el.scrollTop = el.scrollHeight;
+                    if (!follow || Date.now() > deadline) clearInterval(tick);
+                }}, 100);
+            }}
+            </script>""",
+            height=0,
+        )
+
         with st.chat_message("assistant", avatar=BOT_AVATAR):
             # Stream the turn instead of hiding it behind one spinner: the tool
             # calls take a few seconds each, and narrating them ("checking the
@@ -707,20 +750,14 @@ if stats["latest"]:
 if "scrolled_top" not in st.session_state:
     st.session_state.scrolled_top = True
     components.html(
-        """<script>
+        f"""<script>
         const doc = window.parent.document;
         const deadline = Date.now() + 1500;
-        const tick = setInterval(() => {
-            // Which element actually scrolls has moved between Streamlit
-            // versions, so pin every plausible container.
-            for (const sel of ['[data-testid="stMain"]', 'section.main',
-                               '[data-testid="stAppViewContainer"]']) {
-                const el = doc.querySelector(sel);
-                if (el) el.scrollTop = 0;
-            }
-            if (doc.scrollingElement) doc.scrollingElement.scrollTop = 0;
+        const tick = setInterval(() => {{
+            const el = doc.querySelector('{SCROLLER}');
+            if (el) el.scrollTop = 0;
             if (Date.now() > deadline) clearInterval(tick);
-        }, 50);
+        }}, 50);
         </script>""",
         height=0,
     )
