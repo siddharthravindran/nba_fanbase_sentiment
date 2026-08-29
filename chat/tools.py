@@ -6,7 +6,7 @@ from retrieval.aggregate import (
     aggregate_team_sentiment,
     aggregate_topic_sentiment,
 )
-from retrieval.recency import fuse_relevance_recency
+from retrieval.recency import select_two_tier
 from retrieval.vector_store import query
 
 TEAM_NAMES = sorted(TEAM_SUBREDDITS.keys())
@@ -85,7 +85,15 @@ TOOLS = [
                 },
                 "n_results": {
                     "type": "integer",
-                    "description": "How many quotes to retrieve (default 5)",
+                    "description": (
+                        "How many quotes to retrieve (default 12, max 25). "
+                        "These quotes are the only fan writing you get to see, "
+                        "so ask for more when the question is broad (a team's "
+                        "roster, season, or direction) - a handful of quotes "
+                        "about one player can't support a claim about a whole "
+                        "fanbase. Fewer is fine for a narrow question about a "
+                        "single player or event."
+                    ),
                 },
                 "since": DATE_PARAM_SINCE,
                 "until": DATE_PARAM_UNTIL,
@@ -129,7 +137,9 @@ def call_tool(name: str, tool_input: dict, collection) -> dict:
     if name == "retrieve_quotes":
         team = tool_input["team"]
         topic = tool_input["topic"]
-        n_results = tool_input.get("n_results", 5)
+        # Capped: quotes are the model's entire view of the corpus, so more is
+        # generally better, but they all land in the context window verbatim.
+        n_results = max(1, min(int(tool_input.get("n_results", 12)), 25))
         since = tool_input.get("since")
         until = tool_input.get("until")
 
@@ -143,14 +153,21 @@ def call_tool(name: str, tool_input: dict, collection) -> dict:
         # filter would otherwise leave us short of quotes.
         MIN_QUOTE_CHARS = 120
 
-        # Over-fetch a wider semantically-relevant pool, then re-rank it by
-        # relevance AND recency together. Recent posts better reflect settled
-        # sentiment than early rumor buzz that happens to share the same
-        # topic/entities, but ranking on recency alone throws away the strongest
-        # matches, so the two rankings are fused (see fuse_relevance_recency).
-        # Substantive docs are the tail of the length distribution (~10% clear
-        # 120 chars), so the pool has to be wide enough to contain enough of them.
-        candidate_pool = max(400, n_results * 40)
+        # Over-fetch a wide semantically-relevant pool, then re-rank it by
+        # relevance AND recency together (see fuse_relevance_recency) with a
+        # share of slots reserved for recent docs (see select_two_tier).
+        #
+        # The pool is wide for two compounding reasons. Substantive docs are the
+        # tail of the length distribution (~10% clear 120 chars), and recent
+        # docs are a thin slice of a fanbase's history - at 400 candidates a
+        # Lakers "new roster additions" query surfaced 33 recent docs, only 1 of
+        # which named any of that summer's signings. At 2,000 it was 24. Ranking
+        # can only reorder what was retrieved, so the fix has to happen here.
+        #
+        # Widening k stays on the HNSW graph; a created_ts range filter would
+        # force Chroma's brute-force path instead and measured slower (2.07s vs
+        # 0.75s on Lakers) for a narrower pool.
+        candidate_pool = max(2000, n_results * 40)
         results = query(collection, topic, team=team, n_results=candidate_pool)
         docs = results["documents"][0] if results["documents"] else []
         metas = results["metadatas"][0] if results["metadatas"] else []
@@ -175,22 +192,26 @@ def call_tool(name: str, tool_input: dict, collection) -> dict:
         substantive = [row for row in dated if len(row[1] or "") >= MIN_QUOTE_CHARS]
         fallback = [row for row in dated if len(row[1] or "") < MIN_QUOTE_CHARS]
 
-        def _rank(rows):
-            if not rows:
+        def _pick(rows, want):
+            if not rows or want <= 0:
                 return []
             if since or until:
-                # A pinned window is the question, so rank purely by recency.
-                return sorted(rows, key=lambda row: row[2]["created_utc"], reverse=True)
+                # A pinned window is the question, so the two-tier split is
+                # meaningless inside it - rank purely by recency.
+                return sorted(
+                    rows, key=lambda row: row[2]["created_utc"], reverse=True
+                )[:want]
             pool_dists = [row[3] for row in rows]
-            order = fuse_relevance_recency(
+            order = select_two_tier(
                 [row[2].get("created_utc") for row in rows],
                 pool_dists if all(d is not None for d in pool_dists) else None,
+                want,
             )
             return [rows[i] for i in order]
 
-        sampled = _rank(substantive)[:n_results]
+        sampled = _pick(substantive, n_results)
         if len(sampled) < n_results:
-            sampled += _rank(fallback)[: n_results - len(sampled)]
+            sampled += _pick(fallback, n_results - len(sampled))
 
         urls = _lookup_urls([row[0] for row in sampled])
 

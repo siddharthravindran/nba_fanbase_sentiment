@@ -99,6 +99,80 @@ def fuse_relevance_recency(
     )
 
 
+# How recent a doc has to be to count for the reserved slots. Wide enough to
+# cover an offseason news cycle - a week would be empty for most teams in July.
+RECENT_WINDOW_DAYS = 45
+# Share of the returned quotes reserved for that window.
+RECENT_QUOTA = 0.5
+
+
+def split_recent(
+    created_utcs: list[str | None],
+    now: datetime | None = None,
+    window_days: float = RECENT_WINDOW_DAYS,
+) -> tuple[list[int], list[int]]:
+    """Partition indices into (recent, older) by absolute age.
+
+    Separate from decay_weight on purpose: decay is a soft preference that a
+    strong old match can outvote, which is the right behavior for ranking but
+    means recency can lose every slot. This is the hard cut used to reserve
+    slots, so the two aren't interchangeable.
+    """
+    now = now or datetime.now(timezone.utc)
+    cutoff = now.timestamp() - window_days * 86400
+    recent, older = [], []
+    for i, value in enumerate(created_utcs):
+        parsed = parse_utc(value)
+        (recent if parsed and parsed.timestamp() >= cutoff else older).append(i)
+    return recent, older
+
+
+def select_two_tier(
+    created_utcs: list[str | None],
+    distances: list[float] | None,
+    n_results: int,
+    now: datetime | None = None,
+    window_days: float = RECENT_WINDOW_DAYS,
+    quota: float = RECENT_QUOTA,
+) -> list[int]:
+    """Pick `n_results` indices, reserving a share of them for recent docs.
+
+    Fused ranking alone can't fix a pool that has almost no recent docs in it.
+    Recent posts are a thin slice of a fanbase's history - measured on a Lakers
+    "new roster additions" query, a top-400 pool held 33 recent docs and only 1
+    of them named any of that summer's signings. The offseason moves weren't
+    ranked badly; they weren't in the pool. So callers widen the pool (a bigger
+    k is still graph traversal, whereas a created_ts range filter forces
+    Chroma's brute-force path and costs more), and this splits it by date and
+    ranks each side independently so the recent tier can't be crowded out.
+
+    Both tiers are ordered by the same relevance+recency fusion, so the reserved
+    slots still go to the best recent matches rather than merely the newest.
+    Unfilled quota falls through to the other tier - a team with no recent
+    activity returns the same thing it would have before.
+    """
+    recent, older = split_recent(created_utcs, now=now, window_days=window_days)
+
+    def rank(idxs: list[int]) -> list[int]:
+        if not idxs:
+            return []
+        order = fuse_relevance_recency(
+            [created_utcs[i] for i in idxs],
+            [distances[i] for i in idxs] if distances else None,
+            now=now,
+        )
+        return [idxs[i] for i in order]
+
+    ranked_recent, ranked_older = rank(recent), rank(older)
+    n_recent = min(len(ranked_recent), round(n_results * quota))
+    picked = ranked_recent[:n_recent]
+    picked += ranked_older[: n_results - len(picked)]
+    # Older tier came up short (a topic only discussed recently) - backfill.
+    if len(picked) < n_results:
+        picked += ranked_recent[n_recent : n_recent + n_results - len(picked)]
+    return picked
+
+
 def weighted_distribution(items: list[tuple[str, float]]) -> list[dict]:
     """items: [(emotion, weight), ...] -> distribution sorted by weight desc.
 

@@ -20,12 +20,19 @@ MAX_TURNS_PER_SESSION = 15  # caps API spend per visitor session
 
 # Picked by actual recent volume, not vibes - an example prompt that lands on a
 # thin slice of the corpus produces a weak answer and reads as the whole app
-# being weak. Counts are Aug 2026 mentions within that team's docs.
+# being weak. Counts are docs since 2026-06 matching the topic.
+#
+# These deliberately ask open questions instead of asserting a premise. An
+# earlier set included "Are Knicks fans sold on Brunson as the guy?" - written
+# without checking, and by then he'd won Finals MVP two months earlier. To an
+# NBA fan that single line discredits the whole product before they've asked
+# anything. A prompt that only asks "how do fans feel about X" cannot be
+# out of date that way.
 EXAMPLE_PROMPTS = [
-    "How do Lakers fans feel about the Luka era?",      # 890
-    "What are 76ers fans saying about LeBron?",         # 506
-    "Are Knicks fans sold on Brunson as the guy?",      # 288
-    "How do Nuggets fans feel about Jokic's supporting cast?",  # 231
+    "How do Lakers fans feel about the new-look roster?",       # 2,888
+    "What are Spurs fans saying about Wembanyama?",             # 7,689
+    "How are Knicks fans feeling after their Finals run?",      # 6,419
+    "How do Nuggets fans feel about Jokic's supporting cast?",  # 15,752
 ]
 
 SOURCE_LABELS = {
@@ -39,12 +46,16 @@ SOURCE_LABELS = {
 USER_AVATAR = "👤"
 BOT_AVATAR = "🏀"
 
-# Repainting on every token makes the text jitter as it reflows. Buffering to a
-# few dozen characters keeps it readable while still clearly streaming.
-# Repaint roughly every word rather than every ~8 words. Streamlit re-renders
-# the whole markdown block on each flush, so a large value makes text arrive in
-# visible chunks; small enough and it reads as continuous typing.
-STREAM_FLUSH_CHARS = 6
+# Throttle repaints on wall-clock, not character count. Token delivery is
+# bursty, so a character threshold fires in clumps - several repaints back to
+# back, then a pause - which is exactly what reads as choppy. A time budget
+# gives a steady cadence no matter how the tokens arrive.
+#
+# Each repaint re-sends the whole answer and re-parses it as markdown, so the
+# cost grows as the answer does; at ~15/s a long answer spends real time
+# re-rendering text the reader has already read. This is the ceiling, not the
+# target - it repaints only when new text has actually arrived.
+STREAM_FLUSH_SECONDS = 0.07
 
 # Grouping the 9 model labels by valence lets the charts encode meaning in
 # color (is this a happy fanbase or a miserable one?) instead of handing out
@@ -427,15 +438,6 @@ st.set_page_config(page_title="NBA Fanbase Sentiment", page_icon="🏀", layout=
 # staring at the input box with the league chart scrolled off above them.
 # Only force the top on a fresh load; scrolling on every rerun would fight the
 # user while they read a streaming answer.
-if "scrolled_top" not in st.session_state:
-    st.session_state.scrolled_top = True
-    components.html(
-        "<script>window.parent.document"
-        ".querySelector('section.main, [data-testid=\"stMain\"]')"
-        "?.scrollTo({top: 0});</script>",
-        height=0,
-    )
-
 st.markdown(
     """
     <style>
@@ -648,8 +650,9 @@ else:
             # shows the reader that the answer is being sourced, not recalled.
             status = st.status("Working through the data...", expanded=True)
             answer = st.empty()
-            reply, tool_calls, last_paint = "", [], 0
+            reply, tool_calls = "", []
             started = time.perf_counter()
+            last_paint_at = 0.0
             try:
                 for kind, payload in stream_chat(
                     st.session_state.messages,
@@ -658,8 +661,9 @@ else:
                 ):
                     if kind == "text":
                         reply += payload
-                        if len(reply) - last_paint >= STREAM_FLUSH_CHARS:
-                            last_paint = len(reply)
+                        now = time.perf_counter()
+                        if now - last_paint_at >= STREAM_FLUSH_SECONDS:
+                            last_paint_at = now
                             answer.markdown(reply + "▌")
                     elif kind == "tool_start":
                         tool_started = time.perf_counter()
@@ -686,3 +690,37 @@ else:
 
 if stats["latest"]:
     st.caption(f"Data current through {stats['latest']} · updated nightly")
+
+
+# Streamlit anchors a page containing st.chat_input to the bottom, which is
+# right mid-conversation but wrong on arrival - a first-time visitor lands
+# staring at the input box with the league chart scrolled off above them.
+#
+# This has to be the last thing in the script. Streamlit executes top to
+# bottom, so a scroll issued earlier runs against a page that hasn't been
+# painted yet: it scrolls an empty document and is then overridden by the
+# bottom anchor. It also keeps re-asserting for a beat rather than stopping
+# once scrollTop hits 0, because 0 is also the value on a blank page - exiting
+# there is indistinguishable from success and quits before the anchor lands.
+# Only on a fresh load; scrolling on every rerun would fight the user while
+# they read a streaming answer.
+if "scrolled_top" not in st.session_state:
+    st.session_state.scrolled_top = True
+    components.html(
+        """<script>
+        const doc = window.parent.document;
+        const deadline = Date.now() + 1500;
+        const tick = setInterval(() => {
+            // Which element actually scrolls has moved between Streamlit
+            // versions, so pin every plausible container.
+            for (const sel of ['[data-testid="stMain"]', 'section.main',
+                               '[data-testid="stAppViewContainer"]']) {
+                const el = doc.querySelector(sel);
+                if (el) el.scrollTop = 0;
+            }
+            if (doc.scrollingElement) doc.scrollingElement.scrollTop = 0;
+            if (Date.now() > deadline) clearInterval(tick);
+        }, 50);
+        </script>""",
+        height=0,
+    )
