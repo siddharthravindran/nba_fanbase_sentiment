@@ -8,6 +8,17 @@ this one left off - no manual cleanup needed.
 import subprocess
 import sys
 
+from dotenv import load_dotenv
+
+# Load .env in the orchestrator so every step inherits it - load_dotenv writes
+# into os.environ, and subprocess passes that down. This is what points the
+# Chroma sync at the server (CHROMA_HOST) instead of opening data/chroma
+# directly. Without it the sync silently falls back to embedded mode and writes
+# to the index underneath a running app, which is the exact concurrent-writer
+# case the server exists to prevent - and it fails by corrupting a 27GB index
+# rather than by raising.
+load_dotenv()
+
 # sys.executable, not "python3": under cron the PATH is not your shell's, so a
 # bare "python3" resolves to the system interpreter, which has none of this
 # project's dependencies installed (torch, chromadb) and fails at import.
