@@ -7,7 +7,7 @@ from collections.abc import Iterator
 import anthropic
 
 from chat.tools import TOOLS, call_tool
-from retrieval.vector_store import get_collection
+from retrieval.vector_store import TeamCollections
 
 MODEL = "claude-sonnet-4-6"
 MAX_TOOL_ROUNDS = 4
@@ -47,6 +47,14 @@ Keep quotes short and inline; don't build long blockquote sections unless the \
 user explicitly asks for supporting evidence. Don't interrupt yourself with \
 asides like "more on this below".
 
+Timeframe: both tools weight recent posts far more heavily than old ones by \
+default, so a plain call already answers "how do fans feel *now*" - don't \
+pass dates for present-tense questions. The corpus starts in July 2025. Only \
+reach for `since`/`until` when the question is explicitly about a past \
+period ("when the trade happened", "before he signed", "last season"); that \
+turns the recency weighting off and pins the window instead. When you do \
+scope to a date range, say so in your answer so the timeframe is clear.
+
 Important: retrieve_quotes and aggregate_sentiment match posts by semantic \
 similarity to the topic, which does NOT distinguish negation, hypotheticals, \
 rumors, or resolved-vs-unresolved outcomes. A query about a deal that fell \
@@ -57,7 +65,30 @@ actual content and judge whether it reflects the situation described in the \
 user's question or an earlier/different phase of the story (e.g. rumor \
 excitement vs. post-outcome reaction). Explicitly reconcile any mismatch \
 between an emotion label and what the quote itself says, rather than taking \
-the label at face value."""
+the label at face value.
+
+Never state a stale speculation as if it were live. Every quote carries a \
+`created_utc`; check it before you repeat what it claims. Fan speculation \
+about a signing, trade, or injury goes out of date within days, and the \
+retrieved pool routinely contains months-old rumor posts about things that \
+have since been settled. If a quote speculates about a future event and it \
+was written weeks or months ago, that speculation has almost certainly been \
+resolved - do not present it as an open question or a current hope. Either \
+drop it, or date it explicitly ("back in the spring, fans were still hoping \
+..."). Writing "there are whispers X might sign here" about a post from \
+three months ago is a factual error, not a hedge.
+
+Do not narrate your own uncertainty about the league. If a quote names a \
+player, coach, or pick you can't place, just report what fans said about \
+them and move on - never write things like "whoever that turns out to be", \
+"some prospect", or "a player I'm not familiar with". Admitting you don't \
+recognize a name reads as ignorance of the sport and destroys the reader's \
+trust in everything else in the answer. Say nothing rather than that.
+
+Similarly, don't assert a player's current health, contract, or team status \
+as fact when your only evidence is fan posts about it. Attribute it - "fans \
+are bracing for him to miss time" - rather than declaring "he is out for the \
+season". The tools tell you what fans *said*, not what is true."""
 
 
 def stream_chat(
@@ -77,7 +108,7 @@ def stream_chat(
     st.cache_resource) to avoid re-opening the Anthropic client and the
     on-disk Chroma index + embedding model on every single call."""
     client = client or anthropic.Anthropic()
-    collection = collection or get_collection()
+    collection = collection or TeamCollections()
 
     conversation = [{"role": m["role"], "content": m["content"]} for m in messages]
 
