@@ -1,0 +1,21 @@
+[theme]
+base = "dark"
+primaryColor = "#F0603C"
+backgroundColor = "#0B0D12"
+secondaryBackgroundColor = "#151A23"
+textColor = "#E7EAEE"
+borderColor = "#262C38"
+linkColor = "#F0603C"
+font = "Inter"
+headingFont = "Archivo"
+codeFont = "JetBrains Mono"
+baseRadius = "large"
+buttonRadius = "full"
+showWidgetBorder = true
+
+[theme.sidebar]
+backgroundColor = "#0E121A"
+borderColor = "#1F2530"
+
+[server]
+headless = true
