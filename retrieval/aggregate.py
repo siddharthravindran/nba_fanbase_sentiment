@@ -250,7 +250,7 @@ def aggregate_topic_sentiment(
     team: str,
     topic: str,
     n_results: int = 100,
-    candidate_pool: int = 300,
+    candidate_pool: int = 3000,
     since: str | None = None,
     until: str | None = None,
 ) -> dict:
@@ -262,7 +262,23 @@ def aggregate_topic_sentiment(
     which fixed that contamination but threw away strong old matches outright -
     and made genuinely historical questions unanswerable. Now the pool is
     decay-weighted instead, so recent posts dominate without older ones being
-    discarded, and an explicit date range turns the weighting off."""
+    discarded, and an explicit date range turns the weighting off.
+
+    The pool has to be wide for that weighting to mean anything. Chroma picks
+    the pool by relevance alone and only then does recency reweight it, so any
+    month absent from the pool is unrecoverable - decay can reorder candidates,
+    not conjure them. At 300 the effect was severe: for "Jaylen Brown" the pool
+    held zero posts from the month the question was being asked in, and 89 of
+    the sampled 100 predated the trade the user was asking about. A bare player
+    name is closest in embedding space to posts whose entire text is that name,
+    which are game-thread reactions from when he was still on the team, so the
+    chart described a beloved starter months after he was dealt.
+
+    3000 is set to match retrieve_quotes' pool (chat/tools.py). They were 300
+    vs 2000, which meant the chart and the prose were built from different time
+    windows - the written answer could discuss the trade while the chart beside
+    it could not see it. Widening is close to free: latency is dominated by
+    embedding the query, so 300 -> 3000 measured 2.9s -> 2.5s, inside noise."""
     results = vector_query(collection, topic, team=team, n_results=candidate_pool)
     metadatas = results["metadatas"][0] if results["metadatas"] else []
     distances = results["distances"][0] if results.get("distances") else []

@@ -374,6 +374,16 @@ def render_distribution(call: dict, examples: dict[str, str] | None = None):
     if not dist:
         return
 
+    # Prefer an example the aggregate carried back, since those are drawn from
+    # the same sample the bars are computed from. A quote-derived example was
+    # scored into the same emotion but pulled by a separate query, so it can
+    # illustrate a bar without being one of the posts inside it.
+    examples = dict(examples or {})
+    for entry in dist:
+        own = entry.get("examples")
+        if own:
+            examples[entry["emotion"]] = own[0]
+
     team = result.get("team")
     scope = result.get("topic") or "all posts"
     parts = [scope, f"{result.get('n_docs', 0):,} posts scored"]
@@ -468,6 +478,12 @@ def render_evidence(tool_calls: list[dict]):
     # A bar labelled "mockery or sarcasm - 28%" asks the reader to trust a
     # classifier they can't see. Attaching a real post that was scored into that
     # bucket lets them check the label against the actual language.
+    #
+    # Only quotes are available here, and they come from a different query than
+    # the chart, so a tooltip could show a post that isn't among the ones the
+    # bar counts. render_distribution prefers the examples the aggregate itself
+    # returns and falls back to these; this remains the only source for a bucket
+    # too small to have been sampled.
     examples: dict[str, str] = {}
     for q in quotes:
         emotion, text = q.get("top_emotion"), " ".join((q.get("text") or "").split())
