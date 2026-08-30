@@ -63,7 +63,35 @@ RoBERTa fine-tune distilled from those labels. Zero-shot was also what made the
 taxonomy itself cheap to iterate — candidate label sets could be swapped and
 compared on a sample without training anything.
 
-Held-out performance, 14,920 documents:
+The fine-tune saw ~84,500 teacher-labeled documents with 14,920 held out, and was
+then applied to all 3.5M.
+
+### Choosing the checkpoint on macro F1, not accuracy
+
+| Epoch | Train loss | Val loss | Accuracy | Macro F1 |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 0.995 | 0.949 | 0.647 | 0.592 |
+| 2 | 0.785 | **0.888** | 0.674 | **0.631** |
+| 3 | 0.659 | 0.913 | 0.678 | 0.631 |
+
+Epoch 3 is overfitting: training loss keeps falling while validation loss turns
+around and climbs. Epoch 2 is the shipped checkpoint, restored automatically via
+`load_best_model_at_end=True` with `metric_for_best_model="f1_macro"`.
+
+The reason that argument is `f1_macro` and not accuracy is visible in the last
+row: **at epoch 3 accuracy improves while macro F1 does not.** The macro dip
+itself is 0.0008 and means nothing on its own — the direction is the point. The
+extra epoch bought gains on the frequent classes and returned nothing on the
+rare ones, which is the shape class collapse takes before it becomes visible.
+
+That divergence matters here because of how little accuracy can see. `sadness` is
+0.65% of the data, so a model that dropped the class outright would give up well
+under a point of accuracy while macro F1 fell by roughly seven. Had epoch 3 been
+selected on accuracy — the higher number, and the tempting one — the choice would
+have been made using the metric least able to detect the failure that matters
+most downstream, where these labels become a fanbase's emotion breakdown.
+
+Held-out performance of that checkpoint, 14,920 documents:
 
 | Class | Precision | Recall | F1 | Support |
 | --- | ---: | ---: | ---: | ---: |
