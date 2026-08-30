@@ -53,6 +53,68 @@ redistributes a quarter of the corpus into whatever it does have. v2 was
 retrained on NBA data with a consolidated 9-class scheme built for how fans
 actually talk.
 
+### Where v2's training labels came from
+
+Hand-labeling 3.5M documents is not a thing one person does, so the taxonomy was
+developed and applied with a zero-shot teacher: `facebook/bart-large-mnli` scores
+the nine candidate labels against each document via natural language inference
+([`enrichment/zero_shot_labels.py`](enrichment/zero_shot_labels.py)), and v2 is a
+RoBERTa fine-tune distilled from those labels. Zero-shot was also what made the
+taxonomy itself cheap to iterate — candidate label sets could be swapped and
+compared on a sample without training anything.
+
+Held-out performance, 14,920 documents:
+
+| Class | Precision | Recall | F1 | Support |
+| --- | ---: | ---: | ---: | ---: |
+| excitement or hype | 0.743 | 0.726 | **0.735** | 3,199 |
+| disappointment | 0.747 | 0.643 | 0.691 | 2,714 |
+| sadness | 0.673 | 0.680 | 0.677 | 97 |
+| mockery or sarcasm | 0.644 | 0.703 | 0.672 | 3,527 |
+| hope or optimism | 0.676 | 0.657 | 0.666 | 1,608 |
+| pessimism or resignation | 0.608 | 0.669 | 0.637 | 2,743 |
+| anger or frustration | 0.633 | 0.583 | 0.607 | 604 |
+| neutral analysis or discussion | 0.554 | 0.475 | 0.511 | 217 |
+| pride | 0.522 | 0.455 | **0.486** | 211 |
+| **Accuracy** | | | **0.674** | 14,920 |
+| **Macro avg** | 0.644 | 0.621 | 0.631 | 14,920 |
+
+**No class collapse**, which is the result worth leading with. `sadness` is 0.65%
+of the test set — 97 documents — and lands at 0.677 F1, above the macro average.
+Collapsing rare classes into the majority is the default outcome at a 36:1
+imbalance, and it didn't happen.
+
+The two weakest classes are `pride` (0.486) and `neutral analysis or discussion`
+(0.511), and both are boundary problems rather than rare-class problems. Pride
+and excitement are separated by *why* the fan is animated, not by vocabulary —
+"this is why we drafted him" and "LFG" share every surface feature. Neutral is
+worse than rare, it's a residual: it's defined by the absence of the other eight
+rather than by anything of its own. The systematic confusion is elsewhere and
+visible in the precision/recall asymmetry — `disappointment` has precision 0.747
+against recall 0.643 while `pessimism` inverts it at 0.608/0.669, which is
+disappointment leaking into pessimism. Being let down by one result and expecting
+to be let down forever is a genuinely thin line in fan writing.
+
+**What this table measures is agreement with the teacher.** The held-out labels
+are bart-mnli's, so 0.674 is distillation fidelity, not human accuracy — and it
+is not an upper bound on accuracy either. The teacher labels each document
+independently at 0.30–0.51 confidence, so many of its labels are near coin-flips;
+a fine-tune fits systematic signal and generalizes over that noise, meaning some
+share of the missing 33% is the student disagreeing with the teacher and being
+right.
+
+The consequence that matters is specific. `mockery or sarcasm` scores 0.672 here,
+*above* the macro average — so the student reproduces the teacher's sarcasm
+judgments well. That is not the same as getting sarcasm right, and a real Celtics
+fan caught the difference in a live answer: "can't wait to watch him fight over
+the ball and implode" was scored `excitement or hype`, which is what happens when
+a model reads inverted-meaning text literally. Sarcasm detection is exactly where
+an NLI-based zero-shot teacher is weakest, so the most likely explanation is that
+teacher and student are wrong *together* — a blind spot this table cannot show,
+by construction, because agreement is all it can see.
+
+That is the gap the evaluation below is built to close.
+
 ### The same lesson, one layer out: articles
 
 With v2 working on Reddit, the obvious move was to point it at news articles
@@ -159,19 +221,50 @@ returns an answer a Knicks fan recognizes as true — and that failure mode is
 *silent*, because a reviewer without NBA context cannot detect a wrong NBA
 answer. It reads as fluent and plausible either way.
 
-So the evaluation plan has two halves:
+So the evaluation plan has three halves, which is one more than a plan should
+have and is the point:
 
-1. **Model-level** — held-out performance on the v2 fine-tune, plus the
-   out-of-distribution comparison against news articles documented above.
-2. **Domain-level** — structured review by actual NBA fans. A fixed set of
+1. **Model-level** — the held-out fine-tune numbers above, plus the
+   out-of-distribution comparison against news articles.
+2. **Against humans** — the piece the held-out number structurally cannot
+   provide. 600 documents drawn from a window the model never trained on, labeled
+   by hand ([`scripts/build_eval_sample.py`](scripts/build_eval_sample.py),
+   [`scripts/label_app.py`](scripts/label_app.py)).
+3. **Domain-level** — structured review by actual NBA fans. A fixed set of
    questions per team, answers rated on whether the sentiment breakdown matches
    the rater's read of their own fanbase and whether the surfaced quotes are
    representative rather than cherry-picked, with disagreements traced back to
    either retrieval or the classifier.
 
-> **Status:** the out-of-distribution comparison is done; held-out classifier
-> metrics and the fan review are not yet reported here. Results will be added,
-> including the ones that don't flatter the system.
+### How the human-label set is built
+
+Four decisions, each guarding against a specific way the resulting number would
+otherwise be quietly wrong:
+
+- **Time-disjoint window.** The training export was taken 2026-07-22 and scoring
+  ran 07-27; the sample is drawn only from documents *created* after that —
+  60,303 of them. Filtering on `created_utc` rather than ingest time is the
+  conservative choice, since backfills insert old documents long after the fact.
+- **Two strata.** 50 per predicted class gives per-class precision including for
+  `sadness`, which is 0.8% of the window and would appear about five times in a
+  600-document random draw. But an even draw is not the corpus, so a separate
+  150-document prevalence-representative sample carries the headline number, and
+  each stratified row stores the weight that reverts it to true prevalence.
+- **Blind to the model.** The prediction is held in a separate key file and
+  joined back afterward. A labeler shown the model's guess agrees with it more
+  than they should, which inflates precisely the quantity being measured.
+- **A human ceiling.** 50 rows are labeled by two different people. If two NBA
+  fans agree with each other 78% of the time, then a model at 74% is near the
+  limit of what the label set can express, and reporting "74%" without that
+  denominator misdescribes it.
+
+The same pass also yields a three-way comparison — human vs. teacher vs. student
+on identical documents — which is what separates "the student inherited
+bart-mnli's blind spots" from "the student introduced its own."
+
+> **Status:** model-level numbers and the OOD comparison are reported above. The
+> human-label set is built and unlabeled; the fan review is not yet run. Both
+> will be added, including the parts that don't flatter the system.
 
 ---
 
@@ -186,11 +279,15 @@ app.py        Streamlit UI
 scripts/      nightly pipeline, backfills, migrations
 ```
 
-The chat layer exposes two tools. `aggregate_sentiment` returns an emotion
+The chat layer exposes three tools. `aggregate_sentiment` returns an emotion
 distribution — exact SQL over every scored document for a team, or a
 semantically-scoped sample when a topic is given. `retrieve_quotes` returns real
-fan posts with source links. The model decides which to call, and answers are
-grounded in the results rather than in its own NBA knowledge.
+fan posts with source links. `check_player_news` looks a player up in the news
+articles, which exist precisely because fan writing cannot distinguish a rumor
+from a completed transaction: a post reading "we're linked to Kelly Olynyk" and a
+post reacting to a signing are the same shape and score the same way. The model
+decides which to call, and answers are grounded in the results rather than in its
+own NBA knowledge.
 
 Scoring runs batched on Apple Silicon (MPS) when available, ~5x faster than the
 one-at-a-time CPU path with identical labels.
@@ -206,9 +303,10 @@ Written out rather than quietly omitted:
   the headline. This is why articles currently serve as corpus dating rather
   than as a grounding source. A lede-scoped heuristic tested at ~1.10x fan-out
   and ~85% accuracy is the intended fix.
-- **The nightly pipeline has not yet run on a schedule.** Every step is
-  idempotent and the workflow is committed, but no runner is registered — it has
-  only been run by hand.
+- **The nightly pipeline runs on a `launchd` timer**, not on a machine that is
+  reliably awake. Every step is idempotent, and a trailing pass re-fetches recent
+  days so a missed night self-heals — but this is a laptop, and there are gaps in
+  the article corpus where it was closed.
 - **Chroma runs in embedded mode**, so bulk writes require app downtime to avoid
   index corruption. Server mode (`chroma run --path data/chroma` + `CHROMA_HOST`)
   is supported in the client factory but not yet deployed.
