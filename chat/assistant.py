@@ -2,6 +2,7 @@
 in `aggregate_sentiment` (SQLite stats) and `retrieve_quotes` (Chroma semantic
 search) tool results, instead of the model guessing from its own knowledge."""
 import json
+import re
 from collections.abc import Iterator
 
 import anthropic
@@ -211,6 +212,132 @@ signed elsewhere is a real and interesting sentiment finding, as long as you \
 state the outcome correctly."""
 
 
+# The system prompt bans opening on a preamble, and the model does it anyway -
+# "Now I have a thorough picture of the actual situation. Here's the story:",
+# "The picture here is clear and grounded in confirmed reporting." Three rounds
+# of increasingly explicit wording did not hold, so it gets enforced in code.
+#
+# The whole risk is a false positive eating a real first sentence, so the test
+# is a conjunction of three independent signals and drops the sentence only if
+# all three agree.
+#
+# 1. It opens like process narration.
+_PREAMBLE_OPENERS = re.compile(
+    r"""^\s*(
+          (ok(ay)?|alright|great|perfect|now|so)\b[,.]?\s
+        | (i|let\sme|i'll|i've)\s(now\s)?(have|can|know|see|checked|looked|pulled)\b
+        | now\s(that\s)?i\b
+        | here'?s\s(the|what|a|how)\b
+        | (the|this)\s(picture|story|situation|data|numbers|breakdown|evidence
+                       |answer|results|reporting|coverage)\b
+        | based\son\s(the|this|these)\b
+        | with\s(that|this|all\sof\sthat)\b
+    )""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# Self-reference is decisive on its own and skips the guards below. When the
+# assistant is the grammatical subject - "Now I have a clear picture of the
+# Lakers' offseason", "Let me synthesize this into a comprehensive answer" - the
+# sentence is about the assistant's own work, and an answer describing a
+# fanbase never is. The guards exist to protect sentences about the sport, and
+# a sentence whose subject is "I" is not one, so applying them here only costs
+# recall: "Lakers" in that first example tripped the proper-noun guard and let
+# a pure filler sentence through.
+_SELF_REFERENCE = re.compile(
+    r"""^\s*((ok(ay)?|alright|great|perfect|so|now)\b[,.]?\s+)*
+         (i\b|i'|let\sme\b|let's\b)""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# 2. It comments on the *evidence* - how complete or trustworthy it is - which
+#    is the thing the user never asked about. A sentence can start "The
+#    situation..." and still be a real answer ("The situation is ugly for
+#    Celtics fans"); what makes it filler is grading the research.
+_EVIDENCE_TALK = re.compile(
+    r"\b(clear|complete|thorough|full|confirmed|grounded|solid|consistent"
+    r"|straightforward|detailed|comprehensive|good\ssense|clearer|enough)\b",
+    re.IGNORECASE,
+)
+
+# 3. It is about the research rather than the sport. A genuine opening sentence
+#    names somebody or says "fans" - it has to, because it is answering a
+#    question about a fanbase. Requiring the sentence to be empty of both is
+#    what makes a wrong deletion very unlikely: an answer's real first sentence
+#    would have to mention no team, no player, and no fans to be caught.
+_SUBJECT_WORDS = re.compile(r"\bfan(s|base)?\b", re.IGNORECASE)
+_PROPER_NOUN = re.compile(r"\b[A-Z][a-z]{2,}")
+
+# A colon counts as a terminator so "Here's the story:" is caught.
+_SENTENCE_END = re.compile(r"[.!?:][\"')\]]*(?:\s+|\n)")
+
+
+# "Here's the story:" is a preamble with nothing in it to grade, so the
+# evidence-talk test above can't see it. Announcing that an answer is coming is
+# filler on its own, but only in this exact shape: short, and no clause after
+# the colon. "Here's the part fans keep arguing about: the return" is content.
+_ANNOUNCEMENT = re.compile(
+    r"^\s*here'?s\s(the|what|a|how)\s[\w\s]{0,20}[:.]\s*$", re.IGNORECASE
+)
+
+
+# Preamble comes in runs, not single sentences - "Now I have a clear picture of
+# the Lakers' offseason. Let me synthesize this into a comprehensive answer."
+# Bounded so that a systematic misjudgement can only ever eat the top of an
+# answer, never the whole thing.
+MAX_PREAMBLE_SENTENCES = 3
+
+
+def _is_preamble(sentence: str) -> bool:
+    if len(sentence) > 200:
+        return False
+    if _ANNOUNCEMENT.match(sentence) or _SELF_REFERENCE.match(sentence):
+        return True
+    if not _PREAMBLE_OPENERS.match(sentence) or not _EVIDENCE_TALK.search(sentence):
+        return False
+    # Skip the first word, which is capitalized just for being first.
+    body = sentence.split(" ", 1)[-1]
+    return not _SUBJECT_WORDS.search(sentence) and not _PROPER_NOUN.search(body)
+
+
+def _drop_preamble(chunks: Iterator[str]) -> Iterator[str]:
+    """Withhold leading sentences until they can be judged, then emit or drop.
+
+    Costs a sentence or two of streaming latency, once per round, which is
+    invisible next to the several seconds of tool calls that precede it."""
+    buffer = ""
+    dropped = 0
+    for chunk in chunks:
+        if buffer is None:
+            yield chunk
+            continue
+        buffer += chunk
+        while True:
+            match = _SENTENCE_END.search(buffer)
+            if not match:
+                break
+            first, rest = buffer[: match.end()], buffer[match.end() :]
+            if dropped < MAX_PREAMBLE_SENTENCES and _is_preamble(first):
+                buffer = rest
+                dropped += 1
+                continue
+            # First sentence that isn't preamble - the answer starts here, and
+            # everything after streams through untouched.
+            buffer = None
+            text = first + rest
+            if dropped:
+                # A dropped sentence can leave the blank line that separated it
+                # from the answer, which renders as an empty paragraph.
+                text = text.lstrip()
+            if text:
+                yield text
+            break
+    # Text with no sentence terminator is all that this round produced. Never
+    # drop it: an empty answer is a far worse failure than a filler sentence.
+    if buffer:
+        yield buffer
+
+
 def stream_chat(
     messages: list[dict], client: anthropic.Anthropic | None = None, collection=None
 ) -> Iterator[tuple[str, object]]:
@@ -240,7 +367,7 @@ def stream_chat(
             tools=TOOLS,
             messages=conversation,
         ) as stream:
-            for chunk in stream.text_stream:
+            for chunk in _drop_preamble(stream.text_stream):
                 yield "text", chunk
             response = stream.get_final_message()
 
