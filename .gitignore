@@ -221,9 +221,19 @@ __marimo__/
 emotion-model/
 emotion-classifier/
 emotion-classifier-v2/
-data/
+data/*
 *.csv
 *.parquet
 __pycache__/
 .ipynb_checkpoints/
 logs/
+
+# The classifier eval sample is the one thing under data/ small enough and
+# important enough to track: 90KB, and the human-label evaluation can't be
+# reproduced or audited without the exact rows that were labeled. Negations must
+# follow both `data/*` and `*.csv` to win, and `data/*` is written with the glob
+# rather than as `data/` because git will not descend into an excluded directory
+# to find a re-included file inside it.
+!data/eval/
+data/eval/*
+!data/eval/*.csv
