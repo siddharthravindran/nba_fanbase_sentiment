@@ -196,6 +196,55 @@ def aggregate_team_sentiment(
     }
 
 
+# Enough text to judge whether a label fits. Short fragments are the problem
+# case - "we need him" is scored as hope but reads as nothing, so it cannot
+# settle whether a bucket is real signal or the classifier misfiring.
+EXAMPLE_MIN_CHARS = 100
+EXAMPLE_MAX_CHARS = 200
+EXAMPLES_PER_EMOTION = 2
+
+
+def _attach_examples(distribution: list[dict], sampled: list[tuple[dict, str]]) -> None:
+    """Hang a couple of real posts off each emotion bucket, in place.
+
+    Without these the model is asked to narrate percentages it cannot inspect,
+    and the honest move - saying a bucket looks mislabeled - is not available to
+    it, because judging a label requires reading the text that got the label.
+    The v2 classifier's known weak spot is sarcasm, and mockery is this corpus's
+    largest class, so "the excitement bucket is actually sarcasm" is a live
+    possibility that only the underlying posts can settle.
+    """
+    # Two passes, long posts first. A single pass with a length floor starves
+    # exactly the buckets that need explaining: this corpus is mostly short
+    # comments (median ~38 chars), so on the Jaylen Brown trade the 34-post
+    # "excitement or hype" bucket produced no qualifying example at all while a
+    # 7-post bucket did. A short post is weak evidence but it is far better than
+    # leaving the largest bucket unillustrated, which puts the model right back
+    # to narrating a number it cannot inspect.
+    by_emotion: dict[str, list[str]] = {}
+
+    def collect(min_chars: int) -> None:
+        for meta, doc in sampled:
+            text = " ".join((doc or "").split())
+            if len(text) < min_chars:
+                continue
+            label = meta.get("top_emotion") or "unknown"
+            bucket = by_emotion.setdefault(label, [])
+            snippet = text[:EXAMPLE_MAX_CHARS] + (
+                "..." if len(text) > EXAMPLE_MAX_CHARS else ""
+            )
+            if len(bucket) < EXAMPLES_PER_EMOTION and snippet not in bucket:
+                bucket.append(snippet)
+
+    collect(EXAMPLE_MIN_CHARS)
+    collect(1)
+
+    for entry in distribution:
+        examples = by_emotion.get(entry["emotion"])
+        if examples:
+            entry["examples"] = examples
+
+
 def aggregate_topic_sentiment(
     collection,
     team: str,
@@ -217,35 +266,51 @@ def aggregate_topic_sentiment(
     results = vector_query(collection, topic, team=team, n_results=candidate_pool)
     metadatas = results["metadatas"][0] if results["metadatas"] else []
     distances = results["distances"][0] if results.get("distances") else []
+    # Documents, not just metadata: the chart is built from this sample, but the
+    # model writes its answer from retrieve_quotes' separate sample, so it has
+    # never seen the posts behind these bars. That gap is why a 27% "excitement
+    # or hype" bucket could go unmentioned in an answer describing a uniformly
+    # grim fanbase - the model could not explain a bucket it could not read.
+    documents = results["documents"][0] if results.get("documents") else []
 
     rows = [
-        (m, d)
-        for m, d in zip(metadatas, distances or [None] * len(metadatas))
+        (m, d, doc)
+        for m, d, doc in zip(
+            metadatas,
+            distances or [None] * len(metadatas),
+            documents or [""] * len(metadatas),
+        )
         if m.get("created_utc") and m.get("source") not in EXCLUDED_SOURCES
     ]
     if since:
-        rows = [(m, d) for m, d in rows if m["created_utc"] >= since]
+        rows = [r for r in rows if r[0]["created_utc"] >= since]
     if until:
-        rows = [(m, d) for m, d in rows if m["created_utc"] < until + "T99"]
+        rows = [r for r in rows if r[0]["created_utc"] < until + "T99"]
 
     pinned = bool(since or until)
     if pinned:
-        sampled = [m for m, _ in rows[:n_results]]
-        items = [(m.get("top_emotion"), 1.0) for m in sampled]
+        sampled = [(m, doc) for m, _, doc in rows[:n_results]]
+        items = [(m.get("top_emotion"), 1.0) for m, _ in sampled]
     else:
         # Pick the sample by fusing the relevance and recency rankings, then
         # weight each pick by its decay so the percentages still lean recent.
         # Selecting on recency alone (an earlier version of this) is just a
         # date sort in disguise and discards the best matches outright.
-        pool_dists = [d for _, d in rows]
+        pool_dists = [d for _, d, _ in rows]
         order = fuse_relevance_recency(
-            [m.get("created_utc") for m, _ in rows],
+            [m.get("created_utc") for m, _, _ in rows],
             pool_dists if all(d is not None for d in pool_dists) else None,
         )
-        sampled = [rows[i][0] for i in order[:n_results]]
-        items = [(m.get("top_emotion"), decay_weight(m.get("created_utc"))) for m in sampled]
+        sampled = [(rows[i][0], rows[i][2]) for i in order[:n_results]]
+        items = [
+            (m.get("top_emotion"), decay_weight(m.get("created_utc")))
+            for m, _ in sampled
+        ]
 
-    dates = sorted(m["created_utc"] for m in sampled if m.get("created_utc"))
+    distribution = weighted_distribution(items)
+    _attach_examples(distribution, sampled)
+
+    dates = sorted(m["created_utc"] for m, _ in sampled if m.get("created_utc"))
     return {
         "team": team,
         "topic": topic,
@@ -253,5 +318,5 @@ def aggregate_topic_sentiment(
         "n_docs": len(sampled),
         "date_range": {"earliest": dates[0], "latest": dates[-1]} if dates else None,
         "half_life_days": None if pinned else 21,
-        "distribution": weighted_distribution(items),
+        "distribution": distribution,
     }
