@@ -229,7 +229,7 @@ _PREAMBLE_OPENERS = re.compile(
         | now\s(that\s)?i\b
         | here'?s\s(the|what|a|how)\b
         | (the|this)\s(picture|story|situation|data|numbers|breakdown|evidence
-                       |answer|results|reporting|coverage)\b
+                       |answer|results|reporting|coverage|facts)\b
         | based\son\s(the|this|these)\b
         | with\s(that|this|all\sof\sthat)\b
     )""",
@@ -300,6 +300,17 @@ def _is_preamble(sentence: str) -> bool:
     return not _SUBJECT_WORDS.search(sentence) and not _PROPER_NOUN.search(body)
 
 
+def _reopen(text: str) -> str:
+    """Tidy the seam left where a dropped sentence used to be."""
+    # The blank line that separated the preamble from the answer would
+    # otherwise render as an empty leading paragraph.
+    text = text.lstrip()
+    # Preamble often leads in with a colon - "The facts are now clear from the
+    # news coverage: the Celtics traded Jaylen Brown..." - so cutting the
+    # clause leaves the answer starting mid-sentence, lowercase.
+    return text[:1].upper() + text[1:]
+
+
 def _drop_preamble(chunks: Iterator[str]) -> Iterator[str]:
     """Withhold leading sentences until they can be judged, then emit or drop.
 
@@ -324,18 +335,14 @@ def _drop_preamble(chunks: Iterator[str]) -> Iterator[str]:
             # First sentence that isn't preamble - the answer starts here, and
             # everything after streams through untouched.
             buffer = None
-            text = first + rest
-            if dropped:
-                # A dropped sentence can leave the blank line that separated it
-                # from the answer, which renders as an empty paragraph.
-                text = text.lstrip()
+            text = _reopen(first + rest) if dropped else first + rest
             if text:
                 yield text
             break
     # Text with no sentence terminator is all that this round produced. Never
     # drop it: an empty answer is a far worse failure than a filler sentence.
     if buffer:
-        yield buffer
+        yield _reopen(buffer) if dropped else buffer
 
 
 def stream_chat(

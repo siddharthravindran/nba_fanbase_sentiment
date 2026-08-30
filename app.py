@@ -233,6 +233,10 @@ def _style(chart):
     """Vega's defaults (gridlines, axis domains, its own font) fight the page's
     dark palette, so strip the chrome and match the app's typography."""
     return (
+        # Vega renders to SVG, so selecting the chart in the browser copies
+        # markup rather than pixels. The fix is not `usermeta.embedOptions`
+        # (Streamlit's frontend hardcodes actions:false and ignores it) - the
+        # hover toolbar already carries "Download as PNG", it's just unlabeled.
         chart.configure_view(strokeWidth=0)
         .configure_axis(
             labelFont="Inter",
@@ -325,6 +329,42 @@ def league_mood_chart(mood: list[dict]):
     return _style(chart)
 
 
+def _valence_summary(dist: list[dict]) -> str:
+    """Roll the nine labels up into a one-line read on the mood.
+
+    This line used to name the tallest bar, which is a plurality and routinely
+    the opposite of the answer. On "the Jaylen Brown situation" it read
+    "leading: excitement or hype (27%)" while the negative labels summed to 42%
+    - so the caption called a grieving fanbase excited, directly above a chart
+    showing otherwise, and directly beside prose describing the grief.
+
+    Mockery is reported on its own rather than folded into negative. It is the
+    largest class in this corpus and its target is genuinely ambiguous - fans
+    dunk on rivals, on their own front office, and on each other, and the label
+    doesn't say which. Scoring it as misery would overstate the gloom by ~20
+    points on a typical topic; scoring it as positive would be worse. Naming it
+    separately is the only honest option and it also flags the bucket most
+    likely to be a classifier misfire.
+    """
+    totals: dict[str, float] = {}
+    for entry in dist:
+        emotion = entry["emotion"]
+        if emotion in POSITIVE:
+            key = "positive"
+        elif emotion in NEGATIVE:
+            key = "negative"
+        elif emotion == "mockery or sarcasm":
+            key = "mockery"
+        else:
+            continue
+        totals[key] = totals.get(key, 0.0) + entry["pct"]
+
+    # Largest first, so the line leads with the dominant mood, and drop slivers
+    # that would just add noise to a one-line caption.
+    ranked = sorted(totals.items(), key=lambda kv: -kv[1])
+    return " · ".join(f"{pct:.0f}% {name}" for name, pct in ranked if pct >= 5)
+
+
 def render_distribution(call: dict, examples: dict[str, str] | None = None):
     """Show the emotion breakdown the model actually saw. The written answer
     stays narrative; the numbers live here so the model doesn't burn prose
@@ -334,14 +374,12 @@ def render_distribution(call: dict, examples: dict[str, str] | None = None):
     if not dist:
         return
 
-    top = dist[0]
     team = result.get("team")
     scope = result.get("topic") or "all posts"
     parts = [scope, f"{result.get('n_docs', 0):,} posts scored"]
 
     # The percentages are a recency-weighted share unless a date range was
-    # pinned, so don't call the leader "most common" - with weighting applied
-    # it need not be the largest raw count.
+    # pinned, so these are shares of weight rather than raw post counts.
     half_life = result.get("half_life_days")
     date_range = result.get("date_range") or {}
     if half_life:
@@ -350,7 +388,7 @@ def render_distribution(call: dict, examples: dict[str, str] | None = None):
         window = f"{date_range.get('since') or 'start'} → {date_range.get('until') or 'now'}"
         parts.append(window)
 
-    parts.append(f"leading: {top['emotion']} ({top['pct']}%)")
+    parts.append(_valence_summary(dist))
 
     accent = TEAM_COLORS.get(team, DEFAULT_ACCENT)
     st.markdown(
