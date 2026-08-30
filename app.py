@@ -443,12 +443,18 @@ def render_quotes(quotes: list[dict]):
 
 
 def describe_tool_call(call: dict) -> str:
+    # check_player_news takes `player` rather than team/topic, so it has to be
+    # matched by name. Falling through to the quotes wording rendered "Pulling
+    # the league fan quotes about None" - both defaults showing at once.
+    if call["name"] == "check_player_news":
+        return f"Checking news coverage of {call['input'].get('player', 'the player')}"
+
     team = call["input"].get("team", "the league")
     topic = call["input"].get("topic")
     if call["name"] == "aggregate_sentiment":
         scope = f"on {topic}" if topic else "overall"
         return f"Scoring {team} fan sentiment {scope}"
-    return f"Pulling {team} fan quotes about {topic}"
+    return f"Pulling {team} fan quotes about {topic}" if topic else f"Pulling {team} fan quotes"
 
 
 def summarize_evidence(tool_calls: list[dict], elapsed: float | None = None) -> str:
