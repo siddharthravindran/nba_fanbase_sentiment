@@ -15,7 +15,8 @@ returns at most ~250 records per query, so long ranges need to be split to
 avoid silently missing articles beyond that cap).
 
 Usage: python -m scripts.gdelt_article_backfill
-       python -m scripts.gdelt_article_backfill --team Celtics  # single team, for testing
+       python -m scripts.gdelt_article_backfill --team "Boston Celtics"  # single team, for testing
+       python -m scripts.gdelt_article_backfill --days 5                 # trailing catch-up (nightly)
 """
 import argparse
 import json
@@ -142,7 +143,18 @@ def _parse_seendate(seendate: str) -> str | None:
         return None
 
 
-def backfill(team_filter: str | None = None):
+def backfill(team_filter: str | None = None, days: int | None = None):
+    """days=None runs the full historical backfill from START, using the resume
+    state file. days=N instead scans only the last N days and ignores that file
+    in *both* directions - it neither skips teams the historical run finished
+    nor marks any team complete. Both halves matter: reading the file would make
+    the nightly catch-up a no-op the day after the historical backfill finishes,
+    and writing to it would make the historical backfill permanently skip every
+    team a 5-day pass had touched, silently leaving 2025 unbackfilled."""
+    trailing = days is not None
+    start = datetime.now(timezone.utc) - timedelta(days=days) if trailing else START
+    end = datetime.now(timezone.utc)
+
     conn = get_connection()
     existing_urls = {
         row[0] for row in conn.execute("SELECT DISTINCT url FROM raw_docs WHERE source = 'article'")
@@ -158,8 +170,8 @@ def backfill(team_filter: str | None = None):
             print(f"Unknown team: {team_filter!r}. Valid teams: {sorted(TEAM_ALIASES)}")
             return
 
-    completed_teams = _load_completed_teams()
-    total_windows = ((END - START).days // WINDOW_DAYS) + 1
+    completed_teams = set() if trailing else _load_completed_teams()
+    total_windows = ((end - start).days // WINDOW_DAYS) + 1
 
     for team, aliases in teams:
         if team in completed_teams:
@@ -174,10 +186,10 @@ def backfill(team_filter: str | None = None):
         empty_windows = 0
         consecutive_failures = 0
 
-        window_start = START
-        while window_start < END:
+        window_start = start
+        while window_start < end:
             window_num += 1
-            window_end = min(window_start + timedelta(days=WINDOW_DAYS), END)
+            window_end = min(window_start + timedelta(days=WINDOW_DAYS), end)
             print(
                 f"[{team}] window {window_num}/{total_windows} "
                 f"({window_start.date()} to {window_end.date()})...",
@@ -237,6 +249,14 @@ def backfill(team_filter: str | None = None):
 
             window_start = window_end
 
+        if trailing:
+            # No state file to update, and the all-windows-empty check below
+            # doesn't apply: over a 5-day window one team genuinely can draw
+            # zero coverage, so it isn't evidence that GDELT is degraded.
+            note = f", {failed_windows} window(s) failed" if failed_windows else ""
+            print(f"[{team}] {team_docs} article rows added{note}")
+            continue
+
         # A team returning zero candidates in *every* window is not a real
         # result - every NBA team gets news coverage across a 13-month range.
         # It means GDELT was degraded (it answers 200 with a non-article body
@@ -260,6 +280,12 @@ def backfill(team_filter: str | None = None):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--team", help="Run for a single team only, e.g. --team Celtics (for testing)")
+    parser.add_argument("--team", help='Run for a single team only, e.g. --team "Boston Celtics" (for testing)')
+    parser.add_argument(
+        "--days",
+        type=int,
+        help="Scan only the last N days instead of the full history. Ignores the "
+        "resume state file in both directions (see backfill docstring).",
+    )
     args = parser.parse_args()
-    backfill(team_filter=args.team)
+    backfill(team_filter=args.team, days=args.days)

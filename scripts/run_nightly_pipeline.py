@@ -31,6 +31,15 @@ STEPS = [
     # had drifted 11 days behind Reddit. They no longer feed sentiment, but they
     # still date the corpus and are the basis for factual grounding later.
     ("Ingest articles (RSS)", [PY, "-m", "ingest.article_ingest"]),
+    # RSS is a bounded feed, not an archive: it holds a fixed number of recent
+    # entries, so any night this pipeline doesn't run is a day of articles RSS
+    # can never return. GDELT indexes by date range, so re-scanning the last 5
+    # days heals those gaps on the next successful run. The overlap is nearly
+    # free because URL dedup happens before the article text is fetched, so a
+    # steady-state night re-checks 30 cheap queries and downloads only what's
+    # actually new.
+    ("Ingest articles (GDELT, trailing 5 days)",
+     [PY, "-m", "scripts.gdelt_article_backfill", "--days", "5"]),
     ("Clean", [PY, "-m", "enrichment.clean"]),
     ("Score (incremental)", [PY, "-m", "scripts.score_incremental"]),
     ("Sync to Chroma (incremental)", [PY, "-m", "scripts.nightly_sync_chroma"]),
