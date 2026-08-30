@@ -708,6 +708,14 @@ else:
                         if now - last_paint_at >= STREAM_FLUSH_SECONDS:
                             last_paint_at = now
                             answer.markdown(reply + "▌")
+                    elif kind == "text_reset":
+                        # That round was preamble on the way to a tool call, not
+                        # the answer. Repaint right away rather than waiting for
+                        # the next flush - otherwise the retracted text stays on
+                        # screen for the length of the tool call, which is
+                        # precisely when the user is reading it.
+                        reply = ""
+                        answer.markdown("")
                     elif kind == "tool_start":
                         tool_started = time.perf_counter()
                         status.write(describe_tool_call(payload))

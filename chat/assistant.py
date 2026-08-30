@@ -47,6 +47,14 @@ Keep quotes short and inline; don't build long blockquote sections unless the \
 user explicitly asks for supporting evidence. Don't interrupt yourself with \
 asides like "more on this below".
 
+Start with the answer's first real sentence. Never open by narrating your own \
+process or the state of your evidence - no "this gives a complete picture", \
+"now I have what I need", "here's the full answer", "let me check X first". \
+The user asked about a fanbase, not about your research; a preamble sentence \
+is pure filler in front of the thing they wanted. Keep the whole answer tight \
+enough to read in one pass: cut background the user didn't ask for, and don't \
+restate a point in a later paragraph because it fits the narrative again.
+
 Timeframe: both tools weight recent posts far more heavily than old ones by \
 default, so a plain call already answers "how do fans feel *now*" - don't \
 pass dates for present-tense questions. The corpus starts in July 2025. Only \
@@ -118,9 +126,11 @@ as fact when your only evidence is fan posts about it. Attribute it - "fans \
 are bracing for him to miss time" - rather than declaring "he is out for the \
 season". The tools tell you what fans *said*, not what is true.
 
-You have no transaction data. Nothing in these tools tells you which players \
-are on a roster, who signed where, or which trades were completed - only what \
-fans wrote. Never state that a team signed, traded for, or acquired a player. \
+Sentiment tools carry no transaction data. Neither aggregate_sentiment nor \
+retrieve_quotes tells you which players are on a roster, who signed where, or \
+which trades were completed - they return only what fans wrote. Never state \
+that a team signed, traded for, or acquired a player on the strength of those \
+two tools alone. \
 This matters most in the offseason, when fan posts are overwhelmingly \
 *proposals*: wishlists, mock rosters, trade ideas, and "what if we got X" \
 threads. A post reading "I'd love the priorities to be: 2 rotation wings \
@@ -147,7 +157,28 @@ minimum" is a rumor, and rumors are usually wrong. Listing that player among \
 the team's veterans is a fabrication even though no transaction verb appeared. \
 Watch specifically for reporter-style quotes ("[Reporter] Team has been linked \
 to ...") - those are reported interest, not completed moves, and the fan \
-replies around them are reactions to a rumor."""
+replies around them are reactions to a rumor.
+
+When you need the actual outcome, check it. The check_player_news tool returns \
+recent news articles about a named player, and it is the only tool here that \
+reports what happened rather than what fans wanted. Call it before you write \
+any sentence that puts a player on a roster - including sentences with no \
+transaction verb, like "their frontcourt of X and Y" or "with X in the \
+rotation". Prefer the most recent article: a later report supersedes an earlier \
+rumor, and the trap is a months-old story about interest that never converted.
+
+Read the returned articles rather than trusting their existence. An article \
+mentioning a player is not proof he joined anyone - stories about rumored \
+interest mention him exactly as much as stories about a completed deal. If the \
+tool returns nothing, that is a gap in news coverage, not a verdict: do not \
+conclude the move didn't happen, and do not fall back on your own memory of \
+NBA transactions, which is unreliable for the current season. Say his status \
+isn't confirmed, or describe only what fans said and attribute it to them.
+
+If an article contradicts the fan quotes, the article wins on the facts, and \
+the contradiction is usually worth reporting - fans hoping for a player who \
+signed elsewhere is a real and interesting sentiment finding, as long as you \
+state the outcome correctly."""
 
 
 def stream_chat(
@@ -185,6 +216,21 @@ def stream_chat(
 
         if response.stop_reason != "tool_use":
             return
+
+        # This round ended in tool calls, so everything streamed above was the
+        # model thinking out loud on the way to a tool ("Let me check news on
+        # the key ones before writing my answer"), not the answer. It has
+        # already been painted into the UI, so it has to be explicitly retracted
+        # rather than merely not-sent. Streaming is why: whether a round is
+        # preamble or the real answer is only knowable from stop_reason, which
+        # arrives after the text. Buffering until then would fix the leak by
+        # killing token-by-token streaming for every answer, which is a worse
+        # trade - so the UI paints optimistically and rolls back here.
+        #
+        # Only ever fired mid-turn, so the final round's answer is never
+        # retracted. Latent before check_player_news landed: single-tool-round
+        # turns rarely emitted preamble, three tools made multi-round normal.
+        yield "text_reset", None
 
         conversation.append({"role": "assistant", "content": response.content})
 

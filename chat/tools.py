@@ -6,6 +6,7 @@ from retrieval.aggregate import (
     aggregate_team_sentiment,
     aggregate_topic_sentiment,
 )
+from retrieval.factcheck import lookup_player_news
 from retrieval.recency import select_two_tier
 from retrieval.vector_store import query
 
@@ -101,6 +102,45 @@ TOOLS = [
             "required": ["team", "topic"],
         },
     },
+    {
+        "name": "check_player_news",
+        "description": (
+            "Look up the most recent NEWS ARTICLES mentioning a specific player, "
+            "newest first. This is the only tool that returns journalism rather "
+            "than fan writing, and therefore the only one that can tell you what "
+            "actually happened as opposed to what fans were hoping or guessing.\n\n"
+            "Call this BEFORE writing any sentence that places a player on a "
+            "roster - a signing, a trade, an acquisition, or simply describing "
+            "him as part of a team's rotation or frontcourt. Fan posts discuss "
+            "players their team merely wants or is rumored to be pursuing, and "
+            "those posts look identical to posts about players who actually "
+            "arrived. This tool is how you tell them apart.\n\n"
+            "Returns each article's headline, publication date, and opening "
+            "lines. Read them: an article MENTIONING a player proves nothing by "
+            "itself, because coverage of a rumor and coverage of a completed "
+            "deal both mention him. Judge from what the text actually says, and "
+            "prefer the most recent article, since a later report supersedes an "
+            "earlier rumor."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "player": {
+                    "type": "string",
+                    "description": (
+                        "Player's full name, e.g. 'Jonathan Kuminga'. Use the full "
+                        "name rather than a surname - matching is literal, so a "
+                        "bare 'Green' or 'Williams' pulls back unrelated players."
+                    ),
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "How many recent articles to return (default 5, max 10).",
+                },
+            },
+            "required": ["player"],
+        },
+    },
 ]
 
 
@@ -133,6 +173,11 @@ def call_tool(name: str, tool_input: dict, collection) -> dict:
                 collection, team, topic, since=since, until=until
             )
         return aggregate_team_sentiment(team, since=since, until=until)
+
+    if name == "check_player_news":
+        return lookup_player_news(
+            tool_input["player"], limit=tool_input.get("limit", 5)
+        )
 
     if name == "retrieve_quotes":
         team = tool_input["team"]
