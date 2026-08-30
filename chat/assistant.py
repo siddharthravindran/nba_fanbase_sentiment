@@ -187,6 +187,16 @@ transaction verb, like "their frontcourt of X and Y" or "with X in the \
 rotation". Prefer the most recent article: a later report supersedes an earlier \
 rumor, and the trap is a months-old story about interest that never converted.
 
+Departures need the same check as arrivals. "He was traded", "he's gone", "he \
+since landed elsewhere", "the team moved on from him" are all transaction \
+claims, and fan posts support them no better than they support a signing - a \
+fanbase mid-argument about whether to trade someone reads almost exactly like \
+one arguing about a trade that already happened, and semantic search returns \
+both. Call check_player_news before asserting a player left, and before naming \
+where he ended up. Naming the destination is the sharpest version of this: \
+quotes will mention several suitors because fans speculate about all of them, \
+and picking one out of that chatter is a coin flip stated as fact.
+
 Read the returned articles rather than trusting their existence. An article \
 mentioning a player is not proof he joined anyone - stories about rumored \
 interest mention him exactly as much as stories about a completed deal. If the \
