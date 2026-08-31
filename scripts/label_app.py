@@ -111,17 +111,21 @@ with st.sidebar:
     st.header("Labeler")
     annotator = st.text_input("Your name", value=st.session_state.get("annotator", ""))
     st.caption("Each person gets their own file, so two people can label the same rows.")
-    # The overlap block is what makes a human-agreement ceiling possible, and it
-    # only works if the second labeler does those exact rows.
-    overlap_only = st.checkbox(
-        "Second labeler? Only do the shared first 50",
-        value=False,
-        help="Both people label these same 50 so we can measure how often two fans agree.",
+    # Was a checkbox defaulting to the full 600, which put the burden on a guest
+    # labeler to know that a box they'd never seen before applied to them. The
+    # first guest didn't check it, was shown "0 / 600", and stopped at 31.
+    # Helping is now the default and the full set is the deliberate choice.
+    role = st.radio(
+        "Which are you?",
+        ["Helping out (50 shared items)", "Project owner (all 600)"],
+        help="Everyone helping labels the same 50, so we can measure how often two fans agree.",
     )
 
 if not annotator.strip():
     st.info("Enter your name in the sidebar to start.")
     st.stop()
+
+overlap_only = role.startswith("Helping")
 
 st.session_state["annotator"] = annotator
 path = out_path(annotator)
@@ -134,6 +138,10 @@ st.progress(
     (len(queue) - len(todo)) / len(queue) if queue else 1.0,
     text=f"{len(queue) - len(todo)} / {len(queue)} labeled",
 )
+if overlap_only:
+    # Agreement is measured per item, so a second helper starting where the first
+    # stopped produces no comparison at all - it has to be the same rows twice.
+    st.caption("These 50 are the shared set — everyone labels these same items.")
 
 with st.expander("How to label (read once)", expanded=not done):
     st.markdown(RUBRIC)
