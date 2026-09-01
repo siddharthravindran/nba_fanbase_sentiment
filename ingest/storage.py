@@ -34,6 +34,17 @@ CREATE INDEX IF NOT EXISTS idx_clean_docs_created ON clean_docs(created_utc);
 -- The nightly Chroma sync selects by ingestion time, not publication time
 -- (backfilled articles are published long before we fetch them).
 CREATE INDEX IF NOT EXISTS idx_clean_docs_cleaned_at ON clean_docs(cleaned_at);
+
+-- A rejected doc never gets a clean_docs row, so "raw rows with no clean row"
+-- means "new" *and* "rejected at any point in the past" - which had the nightly
+-- clean step re-reading and re-filtering every reject ever recorded, forever.
+-- filter_version is a hash of the filter parameters, so a doc is reconsidered
+-- exactly when the rules that rejected it change, and not otherwise.
+CREATE TABLE IF NOT EXISTS rejected_docs (
+    id TEXT PRIMARY KEY,
+    filter_version TEXT NOT NULL,
+    rejected_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
@@ -70,6 +81,22 @@ def upsert_clean_docs(conn: sqlite3.Connection, docs: list[dict]):
         ON CONFLICT(id) DO NOTHING
         """,
         docs,
+    )
+    conn.commit()
+
+
+def record_rejected_docs(conn: sqlite3.Connection, ids: list[str], filter_version: str):
+    # Re-stamped rather than inserted-or-ignored: when the filters change, a doc
+    # rejected again under the new rules must carry the new version, or it would
+    # be re-examined on every run from then on - the exact bug this table fixes.
+    conn.executemany(
+        """
+        INSERT INTO rejected_docs (id, filter_version) VALUES (?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            filter_version = excluded.filter_version,
+            rejected_at = CURRENT_TIMESTAMP
+        """,
+        [(doc_id, filter_version) for doc_id in ids],
     )
     conn.commit()
 

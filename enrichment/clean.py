@@ -3,9 +3,15 @@
 Drops: [deleted]/[removed] posts, empty/too-short text, AutoModerator boilerplate.
 Cleans: markdown quote markers, link syntax, excess whitespace.
 """
+import hashlib
 import re
 
-from ingest.storage import get_connection, upsert_clean_docs, count_docs
+from ingest.storage import (
+    count_docs,
+    get_connection,
+    record_rejected_docs,
+    upsert_clean_docs,
+)
 
 MIN_LENGTH = 15
 
@@ -18,6 +24,26 @@ BOT_SIGNATURES = (
 MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]+\)")  # [label](url) -> label
 QUOTE_MARKER_RE = re.compile(r"^>\s?", re.MULTILINE)
 WHITESPACE_RE = re.compile(r"\n{3,}")
+
+# Identifies the rules a rejection was made under, so a previously-rejected doc
+# is reconsidered when - and only when - those rules change. Derived from the
+# parameters themselves rather than hand-incremented, because a version someone
+# has to remember to bump is a version that silently goes stale. The cleaning
+# regexes are included because rejection happens *after* cleaning: widening
+# MARKDOWN_LINK_RE changes the post-clean length, and so changes what is too
+# short to keep.
+FILTER_VERSION = hashlib.sha256(
+    repr(
+        (
+            MIN_LENGTH,
+            REMOVED_MARKERS,
+            BOT_SIGNATURES,
+            MARKDOWN_LINK_RE.pattern,
+            QUOTE_MARKER_RE.pattern,
+            WHITESPACE_RE.pattern,
+        )
+    ).encode()
+).hexdigest()[:12]
 
 
 def clean_text(text: str) -> str:
@@ -40,31 +66,44 @@ def is_garbage(text: str) -> bool:
 
 def clean_all():
     conn = get_connection()
-    # Only scan rows not already in clean_docs - upsert_clean_docs is
-    # idempotent regardless, but re-reading/re-cleaning millions of
-    # already-processed rows every run is wasted work on a nightly cron
-    # against an ever-growing table.
+    # Skip rows already kept (in clean_docs) and rows already rejected under
+    # these same filters. Kept alone is not enough: a reject leaves no trace in
+    # clean_docs, so "not in clean_docs" silently means "new OR rejected", and
+    # every reject in the corpus was being re-read and re-filtered nightly.
     rows = conn.execute(
         """
-        SELECT id, source, team, subreddit, text, url, created_utc
-        FROM raw_docs
-        WHERE id NOT IN (SELECT id FROM clean_docs)
-        """
+        SELECT r.id, r.source, r.team, r.subreddit, r.text, r.url, r.created_utc
+        FROM raw_docs r
+        LEFT JOIN clean_docs c ON r.id = c.id
+        LEFT JOIN rejected_docs j ON r.id = j.id AND j.filter_version = ?
+        WHERE c.id IS NULL AND j.id IS NULL
+        """,
+        (FILTER_VERSION,),
     ).fetchall()
     columns = ["id", "source", "team", "subreddit", "text", "url", "created_utc"]
 
-    kept, dropped = [], 0
+    kept, rejected = [], []
     for row in rows:
         doc = dict(zip(columns, row))
         cleaned = clean_text(doc["text"])
         if is_garbage(cleaned):
-            dropped += 1
+            rejected.append(doc["id"])
             continue
         doc["text"] = cleaned
         kept.append(doc)
 
     upsert_clean_docs(conn, kept)
-    print(f"Cleaned {len(rows)} new raw docs -> kept {len(kept)}, dropped {dropped}")
+    record_rejected_docs(conn, rejected, FILTER_VERSION)
+
+    # Reporting the skip count is what makes the next anomaly legible: a run
+    # that suddenly examines 300k rows instead of 2k is either a filter change
+    # or a regression, and the two are indistinguishable without this line.
+    skipped = conn.execute(
+        "SELECT COUNT(*) FROM rejected_docs WHERE filter_version = ?",
+        (FILTER_VERSION,),
+    ).fetchone()[0]
+    print(f"Cleaned {len(rows)} new raw docs -> kept {len(kept)}, dropped {len(rejected)}")
+    print(f"Skipped {skipped} previously rejected (filter version {FILTER_VERSION})")
     print(f"Total in clean_docs: {count_docs(conn, 'clean_docs')}")
     conn.close()
 
